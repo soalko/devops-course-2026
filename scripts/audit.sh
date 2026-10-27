@@ -34,5 +34,23 @@ check "Политика по умолчанию для входящего тра
 echo "[3] Учётные записи"
 awk -F: '$3>=1000 && $3<65534 {printf "    %s (uid=%s)\n",$1,$3}' /etc/passwd
 
+echo "[4] Веб-сервер"
+SITE_DIR="/var/www/devops-site"
+CERT="/etc/ssl/certs/devops.crt"
+KEY="/etc/ssl/private/devops.key"
+CERT_MIN_DAYS="${CERT_MIN_DAYS:-30}"      # порог можно задать извне: CERT_MIN_DAYS=400 ./audit.sh
+# а) служба nginx активна
+check "Служба nginx активна" "active" "$(systemctl is-active nginx)"
+# б) конфигурация nginx синтаксически корректна (код возврата nginx -t)
+check "Конфигурация nginx корректна (nginx -t)" "0" "$(sudo nginx -t >/dev/null 2>&1; echo $?)"
+# в) сертификат истекает не ранее чем через CERT_MIN_DAYS дней (код возврата openssl x509 -checkend)
+check "Сертификат действителен ещё не менее ${CERT_MIN_DAYS} дн." "0" \
+    "$(openssl x509 -checkend $((CERT_MIN_DAYS * 86400)) -noout -in "$CERT" >/dev/null 2>&1; echo $?)"
+# г) в каталоге ресурса нет файлов, доступных для записи всем, права ключа равны 600
+WW_FILES="$(find "$SITE_DIR" -perm -o+w | wc -l | tr -d ' ')"
+KEY_MODE="$(sudo stat -c '%a' "$KEY")"
+check "Нет файлов с записью для всех, права ключа 600 (файлов: $WW_FILES, ключ: $KEY_MODE)" \
+    "0 600" "$WW_FILES $KEY_MODE"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
