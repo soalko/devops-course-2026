@@ -239,7 +239,80 @@ sudo nginx -t && sudo systemctl reload nginx
 Содержимое доставляется из каталога `site/` репозитория сценарием `scripts/deploy.sh`
 (rsync `--delete --chmod=D755,F644`; на macOS нужен GNU rsync: `brew install rsync`, системный openrsync не принимает `--chmod=D755,F644`).
 
-## 9. Снимки состояния
+## 9. Контейнеризация
+
+Docker Engine 29.9.2 и плагин Compose v5.6.1 установлены из официального репозитория Docker
+(`https://download.docker.com/linux/ubuntu`, ветка `resolute stable`, arm64); пакет `docker.io`
+из репозитория Ubuntu не используется. Служба `docker.service` активна и включена в автозагрузку.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n" \
+  "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" "$(dpkg --print-architecture)" \
+  | sudo tee /etc/apt/sources.list.d/docker.sources
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Группа `docker`: единственный участник — `devops` (`sudo usermod -aG docker devops`, действует с
+нового сеанса). Участник группы фактически имеет права root, поэтому в неё включаются только
+учётные записи с правом `sudo`.
+
+| Объект | Значение |
+|---|---|
+| Каталог проекта | `/home/devops/app` (имя проекта Compose — `app`), доставляется из каталога `app/` репозитория: `rsync -avz --delete --exclude=.env app/ devops:app/` |
+| Образ приложения | `devops-app:1.0` (Dockerfile из `app/`, базовый образ `python:3.12-slim`, процесс от пользователя `app`, uid 999) |
+| Образ СУБД | `postgres:16-alpine` |
+| Файл переменных | `/home/devops/app/.env`, владелец devops:devops, права 600; создаётся только на сервере из `.env.example`, в репозиторий не добавляется (`.gitignore`) |
+| Сеть | `app_backend` (bridge), сервисы `app` и `db`, имя `db` разрешается встроенным DNS |
+| Именованный том | `app_db_data` → `/var/lib/postgresql/data` в контейнере (`/var/lib/docker/volumes/app_db_data/_data` на сервере) |
+| Публикуемые порты | `127.0.0.1:5000` → `app:5000`; порт СУБД 5432 не публикуется |
+| Перезапуск | `restart: unless-stopped` для обоих сервисов |
+
+Создание файла `.env` на сервере:
+
+```bash
+cd ~/app
+cp .env.example .env
+chmod 600 .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+```
+
+Запуск и проверка:
+
+```bash
+cd ~/app
+docker compose up -d --build
+docker compose ps                  # db: (healthy)
+curl -s http://127.0.0.1:5000/     # Hello from Docker, Солдатов! Visits: N
+```
+
+`docker compose down` сохраняет том `app_db_data`; `docker compose down -v` удаляет базу данных
+без возможности восстановления.
+
+Обратный прокси-сервер: в блок `server` порта 443 файла `/etc/nginx/sites-available/devops-site`
+перед `location /` добавлено расположение
+
+```nginx
+    location /app/ {
+        proxy_pass http://127.0.0.1:5000/;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+```
+
+Применение: `sudo nginx -t && sudo systemctl reload nginx`. Приложение доступно по адресу
+`https://devops.local/app/`, статический ресурс `https://devops.local/` сохранён.
+Порт 5000 намеренно не открывается в UFW: публикация на `0.0.0.0` обошла бы межсетевой экран,
+так как Docker добавляет собственные правила iptables.
+
+## 10. Снимки состояния
 
 | Наименование | Момент создания (UTC) | Состояние |
 |---|---|---|
@@ -247,8 +320,9 @@ sudo nginx -t && sudo systemctl reload nginx
 | 02-keys-configured | 2026-10-20 08:40 | создана учётная запись devops, настроен вход по ключу |
 | 03-ssh-hardened | 2026-10-20 08:42 | применён `99-hardening.conf`, sshd на порту 2222 |
 | 04-nginx-https | 2026-10-27 08:13 | установлен Nginx, ресурс devops.local обслуживается по HTTPS |
+| 05-docker-compose | 2026-10-27 10:25 | установлен Docker Engine, проект `~/app` (приложение + PostgreSQL) запущен, порт 127.0.0.1:5000; снимок выключенной машины |
 
-## 10. Контроль конфигурации
+## 11. Контроль конфигурации
 
 ```bash
 scp scripts/audit.sh devops:~/ && ssh -t devops './audit.sh; echo "exit code: $?"'
