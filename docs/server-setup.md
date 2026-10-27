@@ -156,15 +156,99 @@ echo "preserve_hostname: true" | sudo tee /etc/cloud/cloud.cfg.d/99-preserve-hos
 hostname -f   # devops-vm.devops.local
 ```
 
-## 8. Снимки состояния
+## 8. Веб-сервер
+
+Пакет: `nginx` (1.28.3, репозиторий Ubuntu), служба `nginx.service` включена в автозагрузку.
+Главный процесс работает от `root`, рабочие — от `www-data`.
+
+```bash
+sudo apt update && sudo apt install -y nginx
+```
+
+| Объект | Путь | Владелец | Права |
+|---|---|---|---|
+| Конфигурация ресурса | `/etc/nginx/sites-available/devops-site` (ссылка в `sites-enabled/`) | root:root | 644 |
+| Стандартный ресурс | ссылка `/etc/nginx/sites-enabled/default` удалена, файл в `sites-available/` сохранён | — | — |
+| Каталог ресурса | `/var/www/devops-site` | devops:devops | 755 (каталоги), 644 (файлы) |
+| Сертификат | `/etc/ssl/certs/devops.crt` | root:root | 644 |
+| Закрытый ключ | `/etc/ssl/private/devops.key` | root:root | 600 |
+| Журналы | `/var/log/nginx/devops-site.access.log`, `/var/log/nginx/devops-site.error.log` | root:root | 644 |
+
+Каталог ресурса:
+
+```bash
+sudo mkdir -p /var/www/devops-site
+sudo chown -R devops:devops /var/www/devops-site
+```
+
+Сертификат (самоподписанный, RSA 2048, срок действия 365 дней — до 2027-10-27):
+
+```bash
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/devops.key \
+  -out /etc/ssl/certs/devops.crt \
+  -subj "/CN=devops.local" \
+  -addext "subjectAltName=DNS:devops.local"
+```
+
+Конфигурация `/etc/nginx/sites-available/devops-site`:
+
+```nginx
+# Блок 1: перенаправление HTTP -> HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name devops.local;
+
+    return 301 https://$host$request_uri;
+}
+
+# Блок 2: ресурс по HTTPS
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name devops.local;
+
+    ssl_certificate     /etc/ssl/certs/devops.crt;
+    ssl_certificate_key /etc/ssl/private/devops.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    root /var/www/devops-site;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    error_page 404 /404.html;
+
+    access_log /var/log/nginx/devops-site.access.log;
+    error_log  /var/log/nginx/devops-site.error.log;
+}
+```
+
+Активация (заголовок HSTS не добавляется):
+
+```bash
+sudo ln -s /etc/nginx/sites-available/devops-site /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Доверие к сертификату на хосте: `scp devops:/etc/ssl/certs/devops.crt ~/devops.crt`, далее `curl --cacert ~/devops.crt`.
+Содержимое доставляется из каталога `site/` репозитория сценарием `scripts/deploy.sh`
+(rsync `--delete --chmod=D755,F644`; на macOS нужен GNU rsync: `brew install rsync`, системный openrsync не принимает `--chmod=D755,F644`).
+
+## 9. Снимки состояния
 
 | Наименование | Момент создания (UTC) | Состояние |
 |---|---|---|
 | 01-clean-install | 2026-10-20 08:39 | система установлена и обновлена, адаптеры NAT + Host-only |
 | 02-keys-configured | 2026-10-20 08:40 | создана учётная запись devops, настроен вход по ключу |
 | 03-ssh-hardened | 2026-10-20 08:42 | применён `99-hardening.conf`, sshd на порту 2222 |
+| 04-nginx-https | 2026-10-27 08:13 | установлен Nginx, ресурс devops.local обслуживается по HTTPS |
 
-## 9. Контроль конфигурации
+## 10. Контроль конфигурации
 
 ```bash
 scp scripts/audit.sh devops:~/ && ssh -t devops './audit.sh; echo "exit code: $?"'
