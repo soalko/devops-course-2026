@@ -52,5 +52,19 @@ KEY_MODE="$(sudo stat -c '%a' "$KEY")"
 check "Нет файлов с записью для всех, права ключа 600 (файлов: $WW_FILES, ключ: $KEY_MODE)" \
     "0 600" "$WW_FILES $KEY_MODE"
 
+echo "[5] Контейнеризация"
+APP_DIR="${HOME}/app"
+# а) служба docker активна
+check "Служба docker активна" "active" "$(systemctl is-active docker)"
+# б) контейнер СУБД находится в состоянии healthy
+check "Контейнер СУБД app-db-1 в состоянии healthy" "healthy" \
+    "$(docker inspect -f '{{.State.Health.Status}}' app-db-1 2>/dev/null)"
+# в) порты 5000 и 5432 не прослушиваются ни на одном адресе, кроме 127.0.0.1
+EXPOSED="$(ss -tlnH | awk '{print $4}' | grep -E ':(5000|5432)$' | grep -v '^127\.0\.0\.1:' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "Порты 5000 и 5432 прослушиваются только на 127.0.0.1 (лишние сокеты: ${EXPOSED:-нет})" \
+    "" "$EXPOSED"
+# г) права файла ~/app/.env равны 600
+check "Права файла ${APP_DIR}/.env равны 600" "600" "$(stat -c '%a' "${APP_DIR}/.env" 2>/dev/null)"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
