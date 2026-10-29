@@ -66,5 +66,26 @@ check "Порты 5000 и 5432 прослушиваются только на 12
 # г) права файла ~/app/.env равны 600
 check "Права файла ${APP_DIR}/.env равны 600" "600" "$(stat -c '%a' "${APP_DIR}/.env" 2>/dev/null)"
 
+echo "[6] Контрольная работа № 2"
+KR2_DIR="${HOME}/kr2"
+KR2_PORT=8004
+KR2_CERT="/etc/ssl/certs/kr2.crt"
+# а) контейнер сервиса redis в состоянии healthy (контейнер ищется по имени сервиса)
+REDIS_ID="$(docker compose --project-directory "$KR2_DIR" ps -q redis 2>/dev/null)"
+check "Контейнер сервиса redis в состоянии healthy" "healthy" \
+    "$([[ -n "$REDIS_ID" ]] && docker inspect -f '{{.State.Health.Status}}' "$REDIS_ID" 2>/dev/null)"
+# б) порт приложения опубликован только на адресе 127.0.0.1
+KR2_PUB="$(docker compose --project-directory "$KR2_DIR" port app "$KR2_PORT" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check "Порт ${KR2_PORT} опубликован только на 127.0.0.1 (публикация: ${KR2_PUB:-нет})" \
+    "127.0.0.1:${KR2_PORT}" "$KR2_PUB"
+# в) права файла ~/kr2/.env равны 600
+check "Права файла ${KR2_DIR}/.env равны 600" "600" "$(stat -c '%a' "${KR2_DIR}/.env" 2>/dev/null)"
+# г) сертификат kr2.crt истекает не ранее чем через 30 дней
+check "Сертификат ${KR2_CERT} действителен ещё не менее 30 дн." "0" \
+    "$(openssl x509 -checkend $((30 * 86400)) -noout -in "$KR2_CERT" >/dev/null 2>&1; echo $?)"
+# д) ресурс kr2 активирован символической ссылкой в sites-enabled
+check "Ресурс kr2 активирован (/etc/nginx/sites-enabled/kr2)" "/etc/nginx/sites-available/kr2" \
+    "$([[ -L /etc/nginx/sites-enabled/kr2 ]] && readlink -f /etc/nginx/sites-enabled/kr2)"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
