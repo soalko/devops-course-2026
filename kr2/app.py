@@ -1,3 +1,4 @@
+# KR2: Soldatov
 import os
 import socket
 
